@@ -1,0 +1,25 @@
+package org.stagepass.bookingservice.dto;
+
+import lombok.Builder;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+@Builder
+public record ChargeResponse(
+
+        String paymentId,
+
+        String gatewayPaymentId,
+
+        String status,
+
+        String failureReason,
+
+        BigDecimal amountCharged,
+
+        LocalDateTime processedAt
+
+) {
+}
+
