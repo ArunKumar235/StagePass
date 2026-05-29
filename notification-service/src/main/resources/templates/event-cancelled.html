@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Important Notice: Event Cancelled</title>
+    <!-- Premium Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet"/>
+    <style>
+        @media only screen and (max-width: 620px) {
+            .email-container {
+                width: 100% !important;
+                max-width: 100% !important;
+                padding: 10px !important;
+            }
+            .content-padding {
+                padding: 24px 20px !important;
+            }
+        }
+    </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #07070b; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #07070b; padding: 40px 0; width: 100%;">
+    <tr>
+        <td align="center" valign="top">
+            <!-- Outermost Card Container with cancellation coral border -->
+            <table class="email-container" width="600" cellpadding="0" cellspacing="0" border="0"
+                   style="background-color: #151421; border-radius: 24px; overflow: hidden;
+                          border: 1px solid #3d235c; border-top: 4px solid #ff4757;
+                          box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6); max-width: 600px; width: 100%;">
+
+                <!-- ── HEADER / BRANDING ── -->
+                <tr>
+                    <td align="center" style="padding: 40px 40px 20px; border-bottom: 1px solid rgba(255, 255, 255, 0.06);">
+                        <table cellpadding="0" cellspacing="0" border="0">
+                            <tr>
+                                <td style="font-family: 'Outfit', sans-serif; font-size: 32px; font-weight: 800; letter-spacing: -1px; color: #ffffff;">
+                                    Stage<span style="color: #00f5d4;">Pass</span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td align="center" style="font-family: 'Inter', sans-serif; font-size: 13px; color: #9ca3af; letter-spacing: 1px; text-transform: uppercase; margin-top: 6px; display: block;">
+                                    Important Notification
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+                <!-- ── CONTENT SECTION ── -->
+                <tr>
+                    <td class="content-padding" style="padding: 40px 40px 0;">
+                        <!-- Greeting -->
+                        <h2 style="margin: 0; font-family: 'Outfit', sans-serif; font-size: 22px; font-weight: 700; color: #ffffff; letter-spacing: -0.2px;">
+                            Hi <span style="color: #00f5d4;" th:text="${organizerName != null ? organizerName : userName != null ? userName : 'Organiser'}">Organiser</span>,
+                        </h2>
+                        
+                        <!-- Organizer Content -->
+                        <p th:if="${organizerName != null}" style="margin: 16px 0 0; font-family: 'Inter', sans-serif; font-size: 15px; color: #d1d5db; line-height: 1.7;">
+                            This email is to confirm that your event has been **cancelled** in our system by the StagePass administrative team.
+                        </p>
+                        
+                        <!-- General/Customer Content -->
+                        <p th:if="${organizerName == null}" style="margin: 16px 0 0; font-family: 'Inter', sans-serif; font-size: 15px; color: #d1d5db; line-height: 1.7;">
+                            We regret to inform you that the following upcoming event has been **cancelled** by the organiser:
+                        </p>
+                    </td>
+                </tr>
+
+                <!-- ── EVENT DETAILS BLOCK ── -->
+                <tr>
+                    <td class="content-padding" style="padding: 24px 40px 0;">
+                        <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                               style="background-color: #1b192b; border-radius: 12px; border-left: 4px solid #9d4edd; border-top: 1px solid rgba(157, 78, 221, 0.05); border-right: 1px solid rgba(157, 78, 221, 0.05); border-bottom: 1px solid rgba(157, 78, 221, 0.05);">
+                            <tr>
+                                <td style="padding: 18px 20px;">
+                                    <p style="margin: 0 0 4px; font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px;">Event</p>
+                                    <p style="margin: 0; font-family: 'Outfit', sans-serif; font-size: 18px; font-weight: 700; color: #ffffff;" th:text="${eventName}">Event Name</p>
+
+                                    <p style="margin: 12px 0 4px; font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px;">Scheduled Date</p>
+                                    <p style="margin: 0; font-family: 'Inter', sans-serif; font-size: 14px; color: #d1d5db;" th:text="${eventDate}">Date</p>
+
+                                    <p th:if="${eventId != null}" style="margin: 12px 0 4px; font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px;">Event Reference ID</p>
+                                    <p th:if="${eventId != null}" style="margin: 0; font-family: monospace; font-size: 13px; color: #00f5d4;" th:text="${eventId}">EV00000</p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+                <!-- ── REFUND MESSAGE ALERT BOX (Only rendered if customer/refund context is active) ── -->
+                <tr th:if="${refundMessage != null}">
+                    <td class="content-padding" style="padding: 24px 40px 0;">
+                        <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                               style="background-color: #0c201e; border-radius: 12px; border-left: 4px solid #00f5d4; border-top: 1px solid rgba(0, 245, 212, 0.05); border-right: 1px solid rgba(0, 245, 212, 0.05); border-bottom: 1px solid rgba(0, 245, 212, 0.05);">
+                            <tr>
+                                <td style="padding: 18px 20px;">
+                                    <p style="margin: 0 0 6px; font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 700; color: #00f5d4; text-transform: uppercase; letter-spacing: 0.5px;">
+                                        Refund Information
+                                    </p>
+                                    <p style="margin: 0; font-family: 'Inter', sans-serif; font-size: 14px; color: #f3f4f6; line-height: 1.6;"
+                                       th:text="${refundMessage}">
+                                        Your refund will be automatically processed within 5–7 business days. No action is required.
+                                    </p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+                <!-- ── ORGANIZER NOTE BOX (Only rendered if organizer context is active) ── -->
+                <tr th:if="${organizerName != null}">
+                    <td class="content-padding" style="padding: 24px 40px 0;">
+                        <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                               style="background-color: #1a1226; border-radius: 12px; border-left: 4px solid #9d4edd; border-top: 1px solid rgba(157, 78, 221, 0.05); border-right: 1px solid rgba(157, 78, 221, 0.05); border-bottom: 1px solid rgba(157, 78, 221, 0.05);">
+                            <tr>
+                                <td style="padding: 18px 20px;">
+                                    <p style="margin: 0 0 6px; font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 700; color: #9d4edd; text-transform: uppercase; letter-spacing: 0.5px;">
+                                        Administrative Statement
+                                    </p>
+                                    <p style="margin: 0; font-family: 'Inter', sans-serif; font-size: 14px; color: #d1d5db; line-height: 1.6;">
+                                        All booked ticket holders for this event are being automatically notified and refunded in full. No further action is required from you. For any disputes or scheduling assistance, please get in touch with our partner operations desk.
+                                    </p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+                <!-- ── APOLOGY / STATEMENTS ── -->
+                <tr>
+                    <td class="content-padding" style="padding: 24px 40px 0;">
+                        <p th:if="${organizerName == null}" style="margin: 0; font-family: 'Inter', sans-serif; font-size: 14px; color: #9ca3af; line-height: 1.7;">
+                            We sincerely apologize for the inconvenience. This cancellation was initiated by the event organizer and is beyond our platform's control. We hope to see you at another great live event on StagePass soon.
+                        </p>
+                        <p th:if="${organizerName != null}" style="margin: 0; font-family: 'Inter', sans-serif; font-size: 14px; color: #9ca3af; line-height: 1.7;">
+                            Thank you for partnering with StagePass. We are committed to maintaining a clean and secure marketplace, and hope to coordinate on your next premium experience.
+                        </p>
+                    </td>
+                </tr>
+
+                <!-- ── FOOTER / HELP ── -->
+                <tr>
+                    <td class="content-padding" style="padding: 40px 40px; text-align: center;">
+                        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top: 1px solid rgba(255, 255, 255, 0.06); padding-top: 30px;">
+                            <tr>
+                                <td style="font-family: 'Inter', sans-serif; font-size: 13px; color: #9ca3af; line-height: 1.6;">
+                                    Questions about your account or event scheduling? Contact us at
+                                    <a href="mailto:support@stagepass.app" style="color: #00f5d4; text-decoration: none; font-weight: 600;">support@stagepass.app</a>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="font-family: 'Inter', sans-serif; font-size: 11px; color: #4b5563; padding-top: 16px;">
+                                    © 2026 StagePass. All rights reserved. Built for galactic live entertainment.
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+            </table>
+        </td>
+    </tr>
+</table>
+
+</body>
+</html>
