@@ -1,0 +1,161 @@
+server:
+  port: 8080  # Only the gateway is externally exposed. All other services are internal.
+
+spring:
+  application:
+    name: api-gateway
+  reactor:
+    context-propagation: auto
+
+  # ── REDIS ─────────────────────────────────────────────────────────────────
+  # Used exclusively for rate limiter token bucket state.
+  # The gateway does NOT use Redis for caching — only for distributed rate limiting.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}       # Leave empty if no auth in dev
+      timeout: 2000ms                    # Connection + command timeout
+      lettuce:
+        pool:
+          max-active: 16                 # Max connections in pool
+          max-idle: 8
+          min-idle: 2
+
+  # ── CLOUD GATEWAY ─────────────────────────────────────────────────────────
+  cloud:
+    gateway:
+      preserve-host-header: true
+
+      # Default filters applied to EVERY route automatically.
+      # Per-route filters (like stricter rate limiting on /bookings/**) are
+      # defined in RouteConfig.java on top of these defaults.
+      default-filters:
+        # Add X-Response-Time header to every response (ms since request received)
+        - AddResponseHeader=X-Response-Time, ${requestTime}
+
+        # Remove server fingerprint from responses — security best practice
+        - RemoveResponseHeader=Server
+        - RemoveResponseHeader=X-Powered-By
+
+        # Retry failed downstream calls (only for safe idempotent methods)
+        - name: Retry
+          args:
+            retries: 2
+            statuses: BAD_GATEWAY, SERVICE_UNAVAILABLE, GATEWAY_TIMEOUT
+            methods: GET, HEAD   # Never retry POST/PUT/DELETE — not idempotent
+
+
+
+    # ── EUREKA ──────────────────────────────────────────────────────────────
+    discovery:
+      enabled: true
+
+    client:
+      hostname: localhost                 # Prevent DNS resolution of machine hostname
+    
+# ── EUREKA CLIENT ─────────────────────────────────────────────────────────
+# The gateway uses Eureka to resolve lb:// URIs to live service instances.
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URI:http://localhost:8761/eureka}
+    fetch-registry: true
+    register-with-eureka: true
+  instance:
+    prefer-ip-address: true
+    instance-id: ${spring.application.name}:${server.port}
+    hostname: localhost                 # Explicit hostname to avoid DNS lookup
+
+# ── JWT ──────────────────────────────────────────────────────────────────────
+# MUST match the secret in user-service exactly.
+# In production, inject via environment variable or Spring Cloud Config.
+# Never commit the real secret to version control.
+jwt:
+  secret: ${JWT_SECRET}
+  expiration: 3600   # 1 hour in seconds (access token)
+
+# ── CORS ─────────────────────────────────────────────────────────────────────
+stagepass:
+  cors:
+    allowed-origin: ${CORS_ALLOWED_ORIGIN:http://localhost:3000}
+
+# ── RESILIENCE4J (CIRCUIT BREAKERS) ──────────────────────────────────────────
+# When a downstream service fails repeatedly, the circuit opens and calls
+# are redirected to the fallback URI instantly instead of waiting to time out.
+resilience4j:
+  circuitbreaker:
+    instances:
+      bookingServiceCB:
+        slidingWindowSize: 10             # Look at last 10 calls
+        failureRateThreshold: 50          # Open circuit if >50% fail
+        waitDurationInOpenState: 30s      # Wait 30s before trying again (half-open)
+        permittedNumberOfCallsInHalfOpenState: 3
+        slowCallRateThreshold: 80         # Also open if >80% of calls are slow
+        slowCallDurationThreshold: 3s     # "slow" = over 3 seconds
+      userServiceCB:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 15s
+      paymentServiceCB:
+        slidingWindowSize: 10
+        failureRateThreshold: 30          # Stricter for payment — open faster
+        waitDurationInOpenState: 60s      # Longer wait for payment recovery
+      eventServiceCB:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 15s
+      notificationServiceCB:
+        slidingWindowSize: 10
+        failureRateThreshold: 70          # More lenient — notifications are non-critical
+        waitDurationInOpenState: 10s
+
+  timelimiter:
+    instances:
+      bookingServiceCB:
+        timeoutDuration: 5s               # Booking must respond within 5s or fail fast
+      paymentServiceCB:
+        timeoutDuration: 10s              # Payment gets more time (external API call)
+      userServiceCB:
+        timeoutDuration: 3s
+      eventServiceCB:
+        timeoutDuration: 3s
+      notificationServiceCB:
+        timeoutDuration: 3s
+
+# ── ACTUATOR (HEALTH + METRICS) ───────────────────────────────────────────────
+# Exposed for Kubernetes liveness and readiness probes,
+# and for Prometheus scraping via /actuator/prometheus.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, prometheus, gateway
+  endpoint:
+    health:
+      show-details: when-authorized       # Only show full health to admins
+      probes:
+        enabled: true                     # K8s liveness/readiness: /actuator/health/liveness
+  metrics:
+    tags:
+      application: ${spring.application.name}  # Tag all metrics with service name for Grafana
+
+  # ── DISTRIBUTED TRACING (ZIPKIN) ─────────────────────────────────────────────
+  # Every request gets a trace ID that flows through all 7 services.
+  # View the full trace in the Zipkin UI at http://localhost:9411
+  tracing:
+    sampling:
+      probability: 1.0    # Trace 100% of requests in dev; reduce to 0.1 in prod
+    export:
+      zipkin:
+        endpoint: ${ZIPKIN_ENDPOINT:http://localhost:9411/api/v2/spans}
+
+# ── LOGGING ──────────────────────────────────────────────────────────────────
+logging:
+  level:
+    org.stagepass.apigateway: DEBUG
+    org.springframework.cloud.gateway: INFO
+    org.springframework.cloud.gateway.filter: INFO   # Verbose during development
+    io.github.resilience4j: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - traceId=%X{traceId} - %msg%n"
