@@ -1,0 +1,16 @@
+# Secure local environment variables
+.env
+
+# Maven build artifacts
+**/target/
+*.jar
+*.war
+*.ear
+
+# IDE specific files
+.idea/
+.vscode/
+*.iml
+*.sublime-project
+*.sublime-workspace
+.DS_Store

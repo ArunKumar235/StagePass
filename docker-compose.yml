@@ -1,0 +1,306 @@
+
+networks:
+  stagepass-network:
+    driver: bridge
+
+services:
+  # ───────────────────────────────────────────────────────────────────────────
+  # SHARED INFRASTRUCTURE (KAFKA, REDIS, ZIPKIN, MAILPIT)
+  # ───────────────────────────────────────────────────────────────────────────
+
+  kafka:
+    image: apache/kafka:latest
+    container_name: kafka
+    networks:
+      - stagepass-network
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    networks:
+      - stagepass-network
+    ports:
+      - "6379:6379"
+
+  zipkin:
+    image: openzipkin/zipkin:latest
+    container_name: zipkin
+    networks:
+      - stagepass-network
+    ports:
+      - "9411:9411"
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: mailpit
+    networks:
+      - stagepass-network
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # ISOLATED POSTGRES DATABASES
+  # ───────────────────────────────────────────────────────────────────────────
+
+  db-user:
+    image: postgres:18-alpine
+    container_name: db-user
+    networks:
+      - stagepass-network
+    environment:
+      POSTGRES_DB: user-service-db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "0000"
+    volumes:
+      - pg-user-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d user-service-db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  db-event:
+    image: postgres:18-alpine
+    container_name: db-event
+    networks:
+      - stagepass-network
+    environment:
+      POSTGRES_DB: event-service-db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "0000"
+    volumes:
+      - pg-event-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d event-service-db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  db-booking:
+    image: postgres:18-alpine
+    container_name: db-booking
+    networks:
+      - stagepass-network
+    environment:
+      POSTGRES_DB: booking-service-db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "0000"
+    volumes:
+      - pg-booking-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d booking-service-db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  db-payment:
+    image: postgres:18-alpine
+    container_name: db-payment
+    networks:
+      - stagepass-network
+    environment:
+      POSTGRES_DB: payment-service-db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "0000"
+    volumes:
+      - pg-payment-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d payment-service-db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  db-notification:
+    image: postgres:18-alpine
+    container_name: db-notification
+    networks:
+      - stagepass-network
+    environment:
+      POSTGRES_DB: notification-service-db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "0000"
+    volumes:
+      - pg-notification-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d notification-service-db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # STAGEPASS SERVICE APPS TIER
+  # ───────────────────────────────────────────────────────────────────────────
+
+  eureka-server:
+    build: ./eureka-server
+    container_name: eureka-server
+    networks:
+      - stagepass-network
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8761/actuator/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  user-service:
+    build: ./user-service
+    container_name: user-service
+    networks:
+      - stagepass-network
+    environment:
+      DB_URL: jdbc:postgresql://db-user:5432/user-service-db
+      DB_USERNAME: postgres
+      DB_PASSWORD: "0000"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+      JWT_SECRET: ${JWT_SECRET}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+    depends_on:
+      db-user:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+
+  event-service:
+    build: ./event-service
+    container_name: event-service
+    networks:
+      - stagepass-network
+    environment:
+      DB_URL: jdbc:postgresql://db-event:5432/event-service-db
+      DB_USERNAME: postgres
+      DB_PASSWORD: "0000"
+      SPRING_DATA_REDIS_HOST: redis
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+    depends_on:
+      db-event:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      eureka-server:
+        condition: service_healthy
+
+  booking-service:
+    build: ./booking-service
+    container_name: booking-service
+    networks:
+      - stagepass-network
+    environment:
+      DB_URL: jdbc:postgresql://db-booking:5432/booking-service-db
+      DB_USERNAME: postgres
+      DB_PASSWORD: "0000"
+      SPRING_DATA_REDIS_HOST: redis
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+    depends_on:
+      db-booking:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      eureka-server:
+        condition: service_healthy
+
+  payment-service:
+    build: ./payment-service
+    container_name: payment-service
+    networks:
+      - stagepass-network
+    environment:
+      DB_URL: jdbc:postgresql://db-payment:5432/payment-service-db
+      DB_USERNAME: postgres
+      DB_PASSWORD: "0000"
+      SPRING_DATA_REDIS_HOST: redis
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
+    depends_on:
+      db-payment:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      eureka-server:
+        condition: service_healthy
+
+  notification-service:
+    build: ./notification-service
+    container_name: notification-service
+    networks:
+      - stagepass-network
+    environment:
+      DB_URL: jdbc:postgresql://db-notification:5432/notification-service-db
+      DB_USERNAME: postgres
+      DB_PASSWORD: "0000"
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+    depends_on:
+      db-notification:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+      eureka-server:
+        condition: service_healthy
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: api-gateway
+    networks:
+      - stagepass-network
+    ports:
+      - "8080:8080"
+    environment:
+      REDIS_HOST: redis
+      EUREKA_URI: http://eureka-server:8761/eureka
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+      JWT_SECRET: ${JWT_SECRET}
+    depends_on:
+      eureka-server:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+volumes:
+  pg-user-data:
+  pg-event-data:
+  pg-booking-data:
+  pg-payment-data:
+  pg-notification-data:
