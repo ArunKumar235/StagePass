@@ -24,37 +24,39 @@ StagePass is architected as a highly decoupled microservices ecosystem.
 
 ![StagePass System Architecture](./stagepass_architecture.png)
 
-```
-                    ┌───────────────────────────┐
-                    │  Client (Postman/Browser) │
-                    └─────────────┬─────────────┘
-                                  │ :8080
-         ┌────────────────────────▼────────────────────────┐
-         │                  API GATEWAY                    │
-         │          (Security, Routing & Rate Limits)      │
-         └────────┬───────┬───────┬───────┬───────┬────────┘
-                  │       │       │       │       │ lb://
-         ┌────────▼┐ ┌────▼┐ ┌────▼┐ ┌────▼┐ ┌────▼────────┐
-         │  User   │ │Event│ │Book-│ │Pay- │ │Notification │
-         │ Service │ │Service│  ing│ |ment │ │  Service    │
-         │  :8081  │ │:8082│ │:8083│ │:8084│ │  :8085      │
-         └───┬─────┘ └───┬─┘ └───┬─┘ └───┬─┘ └────┬────────┘
-             │           │       │       │        │
-         ┌───▼───┐   ┌───▼──┐ ┌──▼──┐ ┌──▼──┐ ┌───▼──┐
-         │db-user│   │db-evt│ │db-bk│ │db-py│ │db-nt │
-         └───────┘   └──────┘ └─────┘ └─────┘ └──────┘
-             │           │       │       │        │
-             └───────────┼───────┼───────┼────────┘
-                         │       │       │
-      ┌──────────────────▼──┐ ┌──▼───────▼──┐
-      │ Apache Kafka Broker │ │ Redis Cache │
-      │   (Event-Driven)    │ │   & Locks   │
-      └─────────────────────┘ └─────────────┘
-```
-
 For an in-depth technical analysis of database persistence schemas, SAGA failure compensation patterns, payment webhook security, and the complete microservices data structures, see the **[Architecture Deep-Dive Guide (ARCHITECTURE.md)](./ARCHITECTURE.md)**.
 
+Want to see the system under heavy load? We designed a zero-installation high-concurrency ticket-booking simulation using **Grafana k6** running inside Docker to validate our Redis locks and SAGA rollbacks under parallel race conditions. For full instructions on running the simulation and viewing results, check out the **[Concurrency & Load Testing Benchmarks (BENCHMARKS.md)](./BENCHMARKS.md)**.
+
 ---
+
+## 📸 User Interface & Verification Showcase
+
+StagePass features a premium, responsive frontend experience and robust transactional email delivery. Below is a curated gallery of screenshots illustrating the end-to-end user experience and verification dashboards:
+
+### 🔐 Authentication & Profile
+* **[1. Sleek Modern Login & Registration UI](./album/1_auth_page.png)**: Custom modern design for traditional credentials and secure Google/GitHub OAuth integrations.
+* **[2. User Profile Dashboard](./album/2_user_profile.png)**: Interactive view showcasing authenticated user sessions and profile management.
+* **[3. Profile with Encrypted Access Token](./album/3_user_profile_with_access_token.png)**: Displays stateful token allocation on successful authorization.
+* **[4. Welcome Transactional Email](./album/4_user_welcome_email.png)**: Asynchronous onboarding email delivered instantly on new account registrations.
+
+### 💳 Razorpay Payment Gateway & Checkout Flow
+* **[5. Checkout Page](./album/5_payment_page.png)**: Dynamic booking checkout interface.
+* **[6. Integrated Razorpay Checkout Overlay](./album/6_razorpay_page.png)**: Secure host-mapped API integration overlay for card/UPI payments.
+* **[7. Payment Success Overlay](./album/7_razorpay_payment_success_page.png)**: Graceful success confirmation screen upon transaction capture.
+* **[8. API Encrypted Payment Token Response](./album/8_payment_token.png)**: Tracing JWT session payload payloads during secure webhook validations.
+
+### 📬 PDF Tickets & Booking Confirmation Emails
+* **[9. Booking Confirmation Email](./album/9_booking_confirmation_email.png)**: Transactional HTML receipt delivered via Kafka on `booking-confirmed` events.
+* **[10. Dynamic PDF Ticket Attachment](./album/10_ticket_pdf.png)**: Auto-generated PDF ticket detailing seat numbers, booking_id, payment_id and venue details.
+* **[11. SAGA Booking Cancellation & Refund Email](./album/11_booking_cancellation_email.png)**: Automatically sent when a SAGA failure triggers a refund or cancellation event.
+
+### 🔍 Request Tracing & Zipkin Dashboard
+* **[12. Distributed Request Tracing](./album/12_request_tracing.png)**: Comprehensive span visualization mapping the gateway-to-payment lifecycle.
+* **[13. End-to-End Zipkin Trace Flow](./album/13_zipkin_distributed_tracing.png)**: Live distributed trace detailing precise network latency and database execution bounds.
+
+---
+
 
 ## 🔌 Port Reference
 
@@ -110,8 +112,18 @@ If you are developing or debugging code, you can run the services as local Java 
    ```bash
    docker compose up -d db-user db-booking db-event db-payment db-notification redis kafka zipkin mailpit
    ```
-2. **Install the "EnvFile" Plugin in IntelliJ**:
+2. **Configure your Local Hosts File (Crucial for Kafka)**:
+   Because Kafka is running inside Docker but your IntelliJ services will run on the host machine, you **must** map `kafka` to your localhost IP so the Java Kafka client can resolve the broker's advertised listeners:
+   * **Windows:** Open Notepad as Administrator, open `C:\Windows\System32\drivers\etc\hosts`, and add:
+     ```text
+     127.0.0.1 kafka
+     ```
+   * **macOS / Linux:** Open a terminal and run `sudo nano /etc/hosts`, and add:
+     ```text
+     127.0.0.1 kafka
+     ```
+3. **Install the "EnvFile" Plugin in IntelliJ**:
    * Go to Settings -> Plugins and install **EnvFile**.
    * Open the Run Configurations for your services, go to the **EnvFile** tab, check **Enable EnvFile**, and link your root **`.env`** file.
-3. **Start the Services in IntelliJ**:
+4. **Start the Services in IntelliJ**:
    * Start your services normally in your IDE. They will connect automatically to `localhost` databases and brokers, utilizing the built-in fallbacks!
