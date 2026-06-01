@@ -17,6 +17,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -35,22 +36,22 @@ import java.util.stream.Collectors;
  * ── THE BOOKING SAGA ────────────────────────────────────────────────────────
  *
  * HAPPY PATH:
- *   1. Validate seats are AVAILABLE (call Event Service)
- *   2. Lock seats in Redis (TTL: 10 min)         ← compensate: releaseLocks()
- *   3. Persist Booking as PENDING
- *   4. Charge payment (call Payment Service)     ← compensate: refund()
- *   5. Update Booking to CONFIRMED
- *   6. Publish booking-confirmed to Kafka
- *      → Event Service: mark seats BOOKED
- *      → Notification Service: send ticket email
+ * 1. Validate seats are AVAILABLE (call Event Service)
+ * 2. Lock seats in Redis (TTL: 10 min) ← compensate: releaseLocks()
+ * 3. Persist Booking as PENDING
+ * 4. Charge payment (call Payment Service) ← compensate: refund()
+ * 5. Update Booking to CONFIRMED
+ * 6. Publish booking-confirmed to Kafka
+ * → Event Service: mark seats BOOKED
+ * → Notification Service: send ticket email
  *
  * FAILURE PATHS (compensating transactions):
- *   Step 1 fails → seats unavailable → 409, nothing to compensate
- *   Step 2 fails → lock failed → release acquired locks → 409
- *   Step 3 fails → DB error → release all locks → 500
- *   Step 4 fails → payment declined → release all locks → update to FAILED
- *                                   → publish booking-failed
- *   Step 5 fails → DB error after payment → manually reconcile (edge case)
+ * Step 1 fails → seats unavailable → 409, nothing to compensate
+ * Step 2 fails → lock failed → release acquired locks → 409
+ * Step 3 fails → DB error → release all locks → 500
+ * Step 4 fails → payment declined → release all locks → update to FAILED
+ * → publish booking-failed
+ * Step 5 fails → DB error after payment → manually reconcile (edge case)
  *
  * This is a Saga with compensating transactions — NOT a 2-phase commit.
  * Each step either succeeds or triggers a compensating action to undo the
@@ -71,12 +72,20 @@ public class BookingService {
     @Value("${stagepass.booking.seat-lock-ttl-seconds:600}")
     private long seatLockTtlSeconds;
 
-    @Autowired private BookingRepository    bookingRepository;
-    @Autowired private SeatLockService      seatLockService;
-    @Autowired private EventServiceClient   eventServiceClient;
-    @Autowired private PaymentServiceClient paymentServiceClient;
-    @Autowired private BookingEventPublisher bookingEventPublisher;
-    @Autowired private UserContext           userContext;
+    @Autowired
+    private BookingRepository bookingRepository;
+    @Autowired
+    private SeatLockService seatLockService;
+    @Autowired
+    private EventServiceClient eventServiceClient;
+    @Autowired
+    private PaymentServiceClient paymentServiceClient;
+    @Autowired
+    private BookingEventPublisher bookingEventPublisher;
+    @Autowired
+    private UserContext userContext;
+    @Autowired
+    private TransactionTemplate transactionTemplate;
 
     // ── INITIATE BOOKING (THE SAGA) ──────────────────────────────────────────
 
@@ -86,13 +95,13 @@ public class BookingService {
      * Orchestrates: seat validation → seat locking → DB persist → payment → confirm
      * Each step has a compensating action if it fails.
      *
-     * @param request CreateBookingRequest with eventId, seatIds, paymentMethod, paymentToken
+     * @param request CreateBookingRequest with eventId, seatIds, paymentMethod,
+     *                paymentToken
      * @return BookingResponse with bookingId, status, totalAmount, expiresAt
      */
-    @Transactional
     public BookingResponse initiateBooking(CreateBookingRequest request) {
-        String userId  = userContext.getUserId();
-        UUID userUUID  = UUID.fromString(userId);
+        String userId = userContext.getUserId();
+        UUID userUUID = UUID.fromString(userId);
 
         log.info("Booking initiated: userId={} eventId={} seatCount={}",
                 userId, request.eventId(), request.seatIds().size());
@@ -110,8 +119,8 @@ public class BookingService {
         }
 
         BigDecimal totalAmount = validation.totalPrice();
-        LocalDateTime eventDate = validation.eventDate() != null 
-                ? validation.eventDate().atStartOfDay() 
+        LocalDateTime eventDate = validation.eventDate() != null
+                ? validation.eventDate().atStartOfDay()
                 : null;
 
         // ── STEP 2: ACQUIRE REDIS SEAT LOCKS ─────────────────────────────
@@ -130,7 +139,8 @@ public class BookingService {
         // ── STEP 3: PERSIST BOOKING AS PENDING ───────────────────────────
         Booking booking;
         try {
-            booking = createPendingBooking(request, userUUID, totalAmount, validation, eventDate);
+            booking = transactionTemplate
+                    .execute(status -> createPendingBooking(request, userUUID, totalAmount, validation, eventDate));
         } catch (Exception e) {
             // DB failed — compensate by releasing all seat locks
             log.error("Failed to persist booking: userId={} error={}", userId, e.getMessage());
@@ -150,8 +160,7 @@ public class BookingService {
                 "INR",
                 request.paymentMethod(),
                 request.paymentToken(),
-                userUUID
-        );
+                userUUID);
 
         ChargeResponse chargeResponse;
         try {
@@ -236,7 +245,7 @@ public class BookingService {
      *
      * For PENDING bookings: release Redis locks + mark FAILED
      * For CONFIRMED bookings: publish booking-cancelled so Payment Service
-     *                         initiates refunds and Notification Service alerts users
+     * initiates refunds and Notification Service alerts users
      */
     @Transactional
     public void cancelAllBookingsForEvent(UUID eventId) {
@@ -272,14 +281,18 @@ public class BookingService {
      * Step 5 (success path): Update booking to CONFIRMED and publish Kafka event.
      */
     private BookingResponse confirmBooking(Booking booking, ChargeResponse charge) {
-        booking.setStatus(BookingStatus.CONFIRMED);
-        booking.setPaymentId(charge.paymentId());
-        booking.setConfirmedAt(LocalDateTime.now());
-        Booking saved = bookingRepository.save(booking);
+        Booking saved = transactionTemplate.execute(status -> {
+            Booking b = bookingRepository.findByIdWithItems(booking.getId())
+                    .orElseThrow(() -> new BookingNotFoundException(booking.getId()));
+            b.setStatus(BookingStatus.CONFIRMED);
+            b.setPaymentId(charge.paymentId());
+            b.setConfirmedAt(LocalDateTime.now());
+            return bookingRepository.save(b);
+        });
 
         // Publish booking-confirmed:
-        //   → Event Service: mark seats as BOOKED
-        //   → Notification Service: send ticket email + PDF
+        // → Event Service: mark seats as BOOKED
+        // → Notification Service: send ticket email + PDF
         bookingEventPublisher.publishBookingConfirmed(saved);
 
         log.info("Booking confirmed: bookingId={} userId={} paymentId={} amount={}",
@@ -298,22 +311,27 @@ public class BookingService {
      * 1. Release all Redis seat locks
      * 2. Update Booking status to FAILED
      * 3. Publish booking-failed to Kafka
-     *    → Event Service: release seats back to AVAILABLE
+     * → Event Service: release seats back to AVAILABLE
      */
     private void compensate(Booking booking, List<UUID> seatIds,
-                            UUID userId, String reason) {
+            UUID userId, String reason) {
         log.warn("Compensating booking: bookingId={} userId={} reason={}",
                 booking.getId(), userId, reason);
 
         // Release Redis locks
         seatLockService.releaseLocks(seatIds, userId);
 
-        // Update DB
-        booking.setStatus(BookingStatus.FAILED);
-        bookingRepository.save(booking);
+        // Update DB and load fully initialized entity
+        Booking saved = transactionTemplate.execute(status -> {
+            Booking b = bookingRepository.findByIdWithItems(booking.getId())
+                    .orElseThrow(() -> new BookingNotFoundException(booking.getId()));
+            b.setStatus(BookingStatus.FAILED);
+            return bookingRepository.save(b);
+        });
 
-        // Publish failure event
-        bookingEventPublisher.publishBookingFailed(booking, reason);
+        // Publish failure event using fully initialized entity to avoid
+        // LazyInitializationException
+        bookingEventPublisher.publishBookingFailed(saved, reason);
     }
 
     // ── PRIVATE: CREATE PENDING BOOKING ───────────────────────────────────────
@@ -328,10 +346,10 @@ public class BookingService {
      * booked ticket should reflect what was purchased, not the current state.
      */
     private Booking createPendingBooking(CreateBookingRequest request,
-                                         UUID userId,
-                                         BigDecimal totalAmount,
-                                         SeatValidationResponse validation,
-                                         LocalDateTime eventDate) {
+            UUID userId,
+            BigDecimal totalAmount,
+            SeatValidationResponse validation,
+            LocalDateTime eventDate) {
         Booking booking = new Booking();
         booking.setUserId(userId);
         booking.setEventId(request.eventId());
@@ -369,16 +387,15 @@ public class BookingService {
         List<BookingItemResponse> itemResponses = null;
 
         if (booking.getItems() != null) {
-            itemResponses =
-                    booking.getItems().stream().map(item -> BookingItemResponse.builder()
-                            .seatId(item.getSeatId())
-                            .sectionId(item.getSectionId())
-                            .rowLabel(item.getRowLabel())
-                            .seatNumber(item.getSeatNumber())
-                            .tier(item.getTier())
-                            .sectionName(item.getSectionName())
-                            .price(item.getPrice())
-                            .build()).collect(Collectors.toList());
+            itemResponses = booking.getItems().stream().map(item -> BookingItemResponse.builder()
+                    .seatId(item.getSeatId())
+                    .sectionId(item.getSectionId())
+                    .rowLabel(item.getRowLabel())
+                    .seatNumber(item.getSeatNumber())
+                    .tier(item.getTier())
+                    .sectionName(item.getSectionName())
+                    .price(item.getPrice())
+                    .build()).collect(Collectors.toList());
         }
 
         return BookingResponse.builder()
@@ -396,6 +413,5 @@ public class BookingService {
                 .cancelledAt(booking.getCancelledAt())
                 .build();
     }
-
 
 }

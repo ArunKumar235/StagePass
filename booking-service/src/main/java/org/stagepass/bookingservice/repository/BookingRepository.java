@@ -1,6 +1,8 @@
 package org.stagepass.bookingservice.repository;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 import org.stagepass.bookingservice.entity.Booking;
 import org.stagepass.bookingservice.entity.BookingStatus;
@@ -22,4 +24,7 @@ public interface BookingRepository extends JpaRepository<Booking, UUID> {
     Optional<Booking> findByIdAndUserId(UUID bookingId, UUID userId);
 
     List<Booking> findByEventIdAndStatusIn(UUID eventId, List<BookingStatus> pending);
+
+    @Query("SELECT b FROM Booking b LEFT JOIN FETCH b.items WHERE b.id = :id")
+    Optional<Booking> findByIdWithItems(@Param("id") UUID id);
 }

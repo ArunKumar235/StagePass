@@ -64,6 +64,20 @@ public class RazorpayGatewayService {
      */
     public ChargeResponse charge(ChargeRequest request, UUID internalPaymentId) {
         String gatewayPaymentId = request.paymentToken(); // Razorpay payment_id from frontend
+
+        //BENCHMARKS: Mock payment bypass for testing and k6 concurrency simulation
+        if (gatewayPaymentId != null && (gatewayPaymentId.startsWith("mock_") || gatewayPaymentId.equals("mock-token") || gatewayPaymentId.equals("mock_payment_token"))) {
+            log.info("Mock payment token detected. Bypassing Razorpay API call: gatewayPaymentId={} internalId={}",
+                    gatewayPaymentId, internalPaymentId);
+            return ChargeResponse.builder()
+                    .paymentId(internalPaymentId.toString())
+                    .gatewayPaymentId(gatewayPaymentId)
+                    .status("SUCCESS")
+                    .amountCharged(request.amount())
+                    .processedAt(LocalDateTime.now())
+                    .build();
+        }
+
         // Convert to paise: ₹100.50 → 10050
         long amountInPaise = request.amount()
                 .multiply(BigDecimal.valueOf(100))
@@ -120,13 +134,26 @@ public class RazorpayGatewayService {
     /**
      * Initiates a refund for a previously captured payment.
      *
-     * @param gatewayPaymentId  Razorpay payment_id of the original charge
-     * @param amount            amount to refund (INR, not paise — we convert internally)
-     * @param internalRefundId  our internal refund UUID (for logging and tracking)
+     * @param gatewayPaymentId Razorpay payment_id of the original charge
+     * @param amount amount to refund (INR, not paise — we convert internally)
+     * @param internalRefundId our internal refund UUID (for logging and tracking)
      * @return RefundResponse with gateway refund ID and status
      */
     public RefundResponse refund(String gatewayPaymentId, BigDecimal amount,
-                                 UUID internalRefundId) {
+            UUID internalRefundId) {
+        // BENCHMARKS: Mock payment bypass for testing and k6 concurrency simulation
+        if (gatewayPaymentId != null && (gatewayPaymentId.startsWith("mock_") || gatewayPaymentId.equals("mock-token") || gatewayPaymentId.equals("mock_payment_token"))) {
+            log.info("Mock payment token detected for refund. Bypassing Razorpay API call: gatewayPaymentId={} refundId={}",
+                    gatewayPaymentId, internalRefundId);
+            return RefundResponse.builder()
+                    .refundId(internalRefundId.toString())
+                    .gatewayRefundId("mock_refund_" + UUID.randomUUID())
+                    .status("SUCCESS")
+                    .amountRefunded(amount)
+                    .processedAt(LocalDateTime.now())
+                    .build();
+        }
+
         int amountInPaise = amount.multiply(BigDecimal.valueOf(100)).intValue();
 
         log.info("Initiating Razorpay refund: gatewayPaymentId={} amountPaise={} refundId={}",

@@ -17,6 +17,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.Optional;
@@ -66,17 +67,32 @@ public class PaymentService {
     @Autowired private RefundRecordRepository   refundRepo;
     @Autowired private RazorpayGatewayService   gatewayService;
     @Autowired private IdempotencyService       idempotencyService;
+    @Autowired private TransactionTemplate      transactionTemplate;
 
     // ── CHARGE ────────────────────────────────────────────────────────────────
 
-    @Transactional
+    /**
+     * Charges a booking via the payment gateway with full idempotency.
+     *
+     * WHY NOT @Transactional HERE:
+     * A class-level @Transactional holds a DB connection for the full method
+     * duration — including the Redis idempotency read (Step 1) and the gateway
+     * call (Step 5). Under 100 concurrent bookings, 100 threads each hold a
+     * HikariCP connection during Redis + gateway I/O, exhausting the pool of 50
+     * and causing other threads to queue for up to 30s before timing out.
+     *
+     * Instead, we use TransactionTemplate for Steps 2-4 (DB reads + PENDING
+     * insert) and a separate call for Step 6 (DB update). This releases the
+     * connection between logical steps, so 100 concurrent threads do not each
+     * hold a connection during gateway I/O.
+     */
     public ChargeResponse charge(ChargeRequest request) {
         String bookingId = request.bookingId().toString();
 
         log.info("Charge request: bookingId={} amount={} method={}",
                 bookingId, request.amount(), request.paymentMethod());
 
-        // ── STEP 1: Redis idempotency check ───────────────────────────────
+        // ── STEP 1: Redis idempotency check (no DB connection held) ──────
         Optional<ChargeResponse> cached = idempotencyService.getChargeResult(bookingId);
         if (cached.isPresent()) {
             log.info("Idempotency hit (Redis): bookingId={} — returning cached result",
@@ -84,84 +100,108 @@ public class PaymentService {
             return cached.get();
         }
 
-        // ── STEP 2: DB guard — catches Redis cache miss (e.g. Redis restart) ──
-        Optional<PaymentRecord> existing = paymentRepo.findByBookingId(request.bookingId());
-        if (existing.isPresent()) {
-            log.info("Idempotency hit (DB): bookingId={} — returning existing record", bookingId);
-            ChargeResponse response = toChargeResponse(existing.get());
-            idempotencyService.storeChargeResult(bookingId, response); // re-populate Redis
-            return response;
-        }
-
-        // ── STEP 3: Reject reused Razorpay payment token ──────────────────────
+        // ── STEPS 2-4: DB reads + PENDING insert in a short transaction ──
+        // Connection is acquired here and released as soon as the lambda returns.
+        // The gateway call (Step 5) runs OUTSIDE this transaction window.
         String gatewayPaymentId = request.paymentToken();
-        Optional<PaymentRecord> tokenOwner = paymentRepo.findByGatewayPaymentId(gatewayPaymentId);
-        if (tokenOwner.isPresent()) {
-            PaymentRecord record = tokenOwner.get();
-            if (record.getBookingId().equals(request.bookingId())) {
-                log.info("Payment token already processed for the same booking: bookingId={} token={}",
-                        bookingId, gatewayPaymentId);
-                ChargeResponse response = toChargeResponse(record);
-                idempotencyService.storeChargeResult(bookingId, response);
-                return response;
+        PaymentRecord record = transactionTemplate.execute(status -> {
+
+            // Step 2: DB guard — catches Redis cache miss (e.g. Redis restart)
+            Optional<PaymentRecord> existing = paymentRepo.findByBookingId(request.bookingId());
+            if (existing.isPresent()) {
+                log.info("Idempotency hit (DB): bookingId={} — returning existing record", bookingId);
+                ChargeResponse response = toChargeResponse(existing.get());
+                idempotencyService.storeChargeResult(bookingId, response); // re-populate Redis
+                // Signal the caller to return this result by embedding it in an exception
+                // is messy — instead we return null as a sentinel and handle below.
+                // Actually the cleanest approach: return the record and check paymentId != null
+                return existing.get();
             }
 
-            throw new PaymentFailedException(
-                    "Payment token already used by another payment: " + gatewayPaymentId,
-                    "DUPLICATE_PAYMENT_TOKEN");
+            // Step 3: Reject reused Razorpay payment token
+            Optional<PaymentRecord> tokenOwner = paymentRepo.findByGatewayPaymentId(gatewayPaymentId);
+            if (tokenOwner.isPresent()) {
+                PaymentRecord owner = tokenOwner.get();
+                if (owner.getBookingId().equals(request.bookingId())) {
+                    log.info("Payment token already processed for same booking: bookingId={} token={}",
+                            bookingId, gatewayPaymentId);
+                    ChargeResponse response = toChargeResponse(owner);
+                    idempotencyService.storeChargeResult(bookingId, response);
+                    return owner;
+                }
+                throw new PaymentFailedException(
+                        "Payment token already used by another payment: " + gatewayPaymentId,
+                        "DUPLICATE_PAYMENT_TOKEN");
+            }
+
+            // Step 4: Create PENDING PaymentRecord
+            // Note: createdAt and updatedAt are managed by Hibernate's
+            // @CreationTimestamp / @UpdateTimestamp — do NOT set them manually.
+            // Setting them manually causes Hibernate to see a dirty object and
+            // may trigger additional SQL or conflict with lifecycle callbacks.
+            PaymentRecord newRecord = new PaymentRecord();
+            newRecord.setBookingId(request.bookingId());
+            newRecord.setUserId(request.userId());
+            newRecord.setAmount(request.amount());
+            newRecord.setCurrency(request.currency());
+            newRecord.setStatus(PaymentStatus.PENDING);
+            newRecord.setMethod(request.paymentMethod());
+            newRecord.setGatewayPaymentId(gatewayPaymentId);
+            try {
+                return paymentRepo.save(newRecord);
+            } catch (DataIntegrityViolationException e) {
+                log.warn("Duplicate payment token rejected by database: bookingId={} token={}",
+                        bookingId, gatewayPaymentId);
+                throw new PaymentFailedException(
+                        "Payment token already used by another payment: " + gatewayPaymentId,
+                        "DUPLICATE_PAYMENT_TOKEN");
+            }
+        });
+
+        // If the DB transaction returned an already-processed record (Steps 2/3
+        // idempotency hit), the Redis cache was already updated inside the lambda.
+        // Return immediately without calling the gateway.
+        if (record != null && record.getStatus() != PaymentStatus.PENDING) {
+            ChargeResponse earlyResponse = toChargeResponse(record);
+            idempotencyService.storeChargeResult(bookingId, earlyResponse);
+            return earlyResponse;
         }
 
-        // ── STEP 4: Create PENDING PaymentRecord ──────────────────────────
-        PaymentRecord record = new PaymentRecord();
-        record.setBookingId(request.bookingId());
-        record.setUserId(request.userId());
-        record.setAmount(request.amount());
-        record.setCurrency(request.currency());
-        record.setStatus(PaymentStatus.PENDING);
-        record.setMethod(request.paymentMethod());
-        record.setGatewayPaymentId(gatewayPaymentId);
-        LocalDateTime now = LocalDateTime.now();
-        record.setCreatedAt(now);
-        record.setUpdatedAt(now);
-        try {
-            record = paymentRepo.save(record);
-        } catch (DataIntegrityViolationException e) {
-            log.warn("Duplicate payment token rejected by database: bookingId={} token={}",
-                    bookingId, gatewayPaymentId);
-            throw new PaymentFailedException(
-                    "Payment token already used by another payment: " + gatewayPaymentId,
-                    "DUPLICATE_PAYMENT_TOKEN");
+        if (record == null) {
+            // Should not happen — transactionTemplate.execute() only returns null if
+            // the lambda explicitly returns null. Treat as infrastructure error.
+            log.error("TransactionTemplate returned null for bookingId={}", bookingId);
+            throw new RuntimeException("Internal error during payment setup. Please retry.");
         }
 
-        // ── STEP 5: Call Razorpay ─────────────────────────────────────────
+        // ── STEP 5: Call gateway (DB connection NOT held during this call) ─
         ChargeResponse response;
         try {
             response = gatewayService.charge(request, record.getId());
-
-            // ── STEP 6: Update record based on gateway result ─────────────
-            if ("SUCCESS".equals(response.status())) {
-                record.setStatus(PaymentStatus.SUCCESS);
-                record.setGatewayPaymentId(response.gatewayPaymentId());
-                record.setUpdatedAt(LocalDateTime.now());
-            } else {
-                record.setStatus(PaymentStatus.FAILED);
-                record.setFailureReason(response.failureReason());
-                record.setUpdatedAt(LocalDateTime.now());
-            }
-
         } catch (PaymentFailedException e) {
             log.error("Payment gateway error: bookingId={} error={}", bookingId, e.getMessage());
-            record.setStatus(PaymentStatus.FAILED);
-            record.setFailureReason(e.getMessage());
-            record.setUpdatedAt(LocalDateTime.now());
-
-            response = ChargeResponse.failed(
-                    record.getId().toString(), e.getMessage());
+            response = ChargeResponse.failed(record.getId().toString(), e.getMessage());
         }
 
-        paymentRepo.save(record);
+        // ── STEP 6: Update PaymentRecord with gateway result (short transaction)
+        final ChargeResponse finalResponse = response;
+        final PaymentRecord finalRecord = record;
+        transactionTemplate.execute(status -> {
+            PaymentRecord toUpdate = paymentRepo.findById(finalRecord.getId())
+                    .orElse(finalRecord); // fallback to in-memory record if somehow gone
+            if ("SUCCESS".equals(finalResponse.status())) {
+                toUpdate.setStatus(PaymentStatus.SUCCESS);
+                toUpdate.setGatewayPaymentId(finalResponse.gatewayPaymentId());
+            } else {
+                toUpdate.setStatus(PaymentStatus.FAILED);
+                toUpdate.setFailureReason(finalResponse.failureReason());
+            }
+            toUpdate.setUpdatedAt(LocalDateTime.now());
+            paymentRepo.save(toUpdate);
+            return null;
+        });
 
-        // ── STEP 7: Store in idempotency cache ────────────────────────────
+        // ── STEP 7: Store in idempotency cache (no DB connection held) ────
         idempotencyService.storeChargeResult(bookingId, response);
 
         log.info("Charge complete: bookingId={} status={} paymentId={}",

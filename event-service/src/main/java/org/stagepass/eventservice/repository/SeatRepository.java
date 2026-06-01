@@ -207,10 +207,18 @@ public interface SeatRepository extends JpaRepository<Seat, UUID> {
 
     /**
      * Finds multiple seats by their IDs, validated against a single event.
-     * Used when a user selects multiple seats in one booking request.
-     * If the returned list size < requested IDs, some seats don't belong to this event.
+     * JOIN FETCHes Section and Event in one query to avoid N+1 lazy-load
+     * when validateSeats() accesses seat.getSection().getEvent().getEventDate().
      */
-    List<Seat> findByIdInAndSection_Event_Id(List<UUID> seatIds, UUID eventId);
+    @Query("""
+            SELECT s FROM Seat s
+            JOIN FETCH s.section sec
+            JOIN FETCH sec.event e
+            WHERE s.id    IN :seatIds
+            AND   e.id     = :eventId
+            """)
+    List<Seat> findByIdInAndSection_Event_Id(@Param("seatIds") List<UUID> seatIds,
+                                             @Param("eventId") UUID eventId);
 
     /**
      * Finds a seat by its human-readable position (section + row + number).

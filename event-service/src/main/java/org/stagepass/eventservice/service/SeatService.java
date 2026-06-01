@@ -442,15 +442,95 @@ public class SeatService {
     // ── SEAT VALIDATION USED BY BOOKING SERVICE
     // ────────────────────────────────────────────────
 
+    /**
+     * Validates seat availability for a booking request.
+     *
+     * FAST PATH — Redis cache:
+     * During flash sales, the seat-map cache is warmed by the user browsing the
+     * seat picker (GET /events/{eventId}/seats → @Cacheable("seat-map")).
+     * Under 100-VU concurrent load, hitting the DB for all 100 simultaneous
+     * validateSeats calls means 50 requests wait for HikariCP connections, adding
+     * 10-20s of queuing latency. Reading from the Redis cache instead reduces
+     * validation to a single HGET taking <<1ms.
+     *
+     * SLOW PATH — DB fallback:
+     * If the cache is cold (first call before seat map has been viewed, or cache
+     * was evicted after a booking-confirmed Kafka event), falls back to a direct
+     * DB query with JOIN FETCH to avoid N+1 lazy loads.
+     *
+     * SAFETY:
+     * The authoritative double-booking guard is the Redis SETNX seat lock in
+     * SeatLockService (Step 2 of the saga). Serving availability from a 30s-TTL
+     * cache is safe — stale data at most causes an optimistic validation pass that
+     * the seat lock will then correctly reject. BookingService only uses:
+     *   - availableAll  → whether to proceed
+     *   - totalPrice    → amount to charge
+     *   - eventDate     → stored on the booking record (null-safe in caller)
+     * seatDetails is not consumed by BookingService.
+     */
     public SeatValidationResponse validateSeats(UUID eventId, List<UUID> seatIds) {
+
+        // ── FAST PATH: read from Redis-cached seat map ─────────────────────
+        Cache seatMapCache = cacheManager.getCache("seat-map");
+        if (seatMapCache != null) {
+            SeatMapResponse cached = seatMapCache.get(eventId, SeatMapResponse.class);
+            if (cached != null) {
+                return validateFromCachedSeatMap(cached, seatIds);
+            }
+        }
+
+        // ── SLOW PATH: DB query with JOIN FETCH ────────────────────────────
+        return validateFromDb(eventId, seatIds);
+    }
+
+    /**
+     * Validates seats against the Redis-cached SeatMapResponse.
+     * Flattens the section→row→seat tree into a Map<seatId, SeatResponse>
+     * for O(1) per-seat lookups.
+     */
+    private SeatValidationResponse validateFromCachedSeatMap(SeatMapResponse cached,
+                                                              List<UUID> seatIds) {
+        // Flatten cache into seatId → SeatResponse map
+        Map<UUID, SeatResponse> seatIndex = cached.sections().stream()
+                .flatMap(section -> section.rows().stream())
+                .flatMap(row -> row.seats().stream())
+                .collect(Collectors.toMap(SeatResponse::seatId, s -> s));
+
+        Set<UUID> unavailableSeatIds = new HashSet<>();
+        BigDecimal totalPrice = BigDecimal.ZERO;
+
+        for (UUID seatId : seatIds) {
+            SeatResponse seat = seatIndex.get(seatId);
+            if (seat == null || seat.status() != SeatStatus.AVAILABLE) {
+                unavailableSeatIds.add(seatId);
+            } else {
+                totalPrice = totalPrice.add(seat.price());
+            }
+        }
+
+        log.debug("validateSeats (cache hit): eventId={} requested={} unavailable={}",
+                cached.eventId(), seatIds.size(), unavailableSeatIds.size());
+
+        return SeatValidationResponse.builder()
+                .availableAll(unavailableSeatIds.isEmpty())
+                .unavailableSeatIds(new ArrayList<>(unavailableSeatIds))
+                .totalPrice(totalPrice)
+                .seatDetails(Collections.emptyList()) // not consumed by BookingService
+                .eventDate(null)                       // BookingService handles null safely
+                .build();
+    }
+
+    /**
+     * DB fallback: fetches seats with a single JOIN FETCH query (no N+1 lazy loads).
+     */
+    @Transactional(readOnly = true)
+    private SeatValidationResponse validateFromDb(UUID eventId, List<UUID> seatIds) {
         List<Seat> seats = seatRepository.findByIdInAndSection_Event_Id(seatIds, eventId);
 
         Set<UUID> unavailableSeatIds = seats.stream()
                 .filter(seat -> seat.getStatus() != SeatStatus.AVAILABLE)
                 .map(Seat::getId)
                 .collect(Collectors.toSet());
-
-        boolean allAvailable = unavailableSeatIds.isEmpty();
 
         BigDecimal totalPrice = seats.stream()
                 .filter(seat -> seat.getStatus() == SeatStatus.AVAILABLE)
@@ -468,8 +548,10 @@ public class SeatService {
                         .build())
                 .collect(Collectors.toList());
 
+        log.debug("validateSeats (DB): eventId={} seats={}", eventId, seats.size());
+
         return SeatValidationResponse.builder()
-                .availableAll(allAvailable)
+                .availableAll(unavailableSeatIds.isEmpty())
                 .unavailableSeatIds(new ArrayList<>(unavailableSeatIds))
                 .totalPrice(totalPrice)
                 .seatDetails(seatDetails)
