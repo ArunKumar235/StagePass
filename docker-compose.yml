@@ -177,6 +177,7 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 50
     depends_on:
       db-user:
         condition: service_healthy
@@ -198,6 +199,7 @@ services:
       EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka/
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 50
     depends_on:
       db-event:
         condition: service_healthy
@@ -221,6 +223,7 @@ services:
       EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka/
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 50
     depends_on:
       db-booking:
         condition: service_healthy
@@ -247,6 +250,7 @@ services:
       RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID}
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET}
       RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 50
     depends_on:
       db-payment:
         condition: service_healthy
@@ -271,6 +275,7 @@ services:
       EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka/
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 50
     depends_on:
       db-notification:
         condition: service_healthy

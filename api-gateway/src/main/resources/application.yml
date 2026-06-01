@@ -87,12 +87,14 @@ resilience4j:
   circuitbreaker:
     instances:
       bookingServiceCB:
-        slidingWindowSize: 10             # Look at last 10 calls
-        failureRateThreshold: 50          # Open circuit if >50% fail
+        slidingWindowSize: 100            # Evaluate the full 100-VU burst before deciding
+        minimumNumberOfCalls: 50          # Need at least 50 calls before CB can open
+        failureRateThreshold: 50          # Open circuit if >50% of calls FAIL (5xx)
         waitDurationInOpenState: 30s      # Wait 30s before trying again (half-open)
-        permittedNumberOfCallsInHalfOpenState: 3
-        slowCallRateThreshold: 80         # Also open if >80% of calls are slow
-        slowCallDurationThreshold: 3s     # "slow" = over 3 seconds
+        permittedNumberOfCallsInHalfOpenState: 5
+        # NOTE: slowCallRateThreshold / slowCallDurationThreshold intentionally omitted.
+        # The booking Saga chains 4 services — slow calls under concurrency are EXPECTED
+        # and are NOT a failure signal. Only genuine 5xx failures should open this circuit.
       userServiceCB:
         slidingWindowSize: 10
         failureRateThreshold: 50
@@ -112,16 +114,18 @@ resilience4j:
 
   timelimiter:
     instances:
-      bookingServiceCB:
-        timeoutDuration: 5s               # Booking must respond within 5s or fail fast
+      # BENCHMARKING: bookingServiceCB circuit breaker is disabled in RouteConfig.java.
+      # Re-enable both together when restoring the circuit breaker for production.
+      # bookingServiceCB:
+      #   timeoutDuration: 30s
       paymentServiceCB:
-        timeoutDuration: 10s              # Payment gets more time (external API call)
+        timeoutDuration: 30s              # External payment gateway + idempotency check under load
       userServiceCB:
-        timeoutDuration: 3s
+        timeoutDuration: 15s              # Auth/register can be slow under concurrent user creation
       eventServiceCB:
-        timeoutDuration: 3s
+        timeoutDuration: 15s              # Seat validation under heavy concurrent reads
       notificationServiceCB:
-        timeoutDuration: 3s
+        timeoutDuration: 15s              # Email dispatch with template rendering
 
 # ── ACTUATOR (HEALTH + METRICS) ───────────────────────────────────────────────
 # Exposed for Kubernetes liveness and readiness probes,
