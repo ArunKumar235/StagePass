@@ -14,3 +14,7 @@
 *.sublime-project
 *.sublime-workspace
 .DS_Store
+
+# Node/npm dependency files
+node_modules/
+package-lock.json

@@ -1,0 +1,14 @@
+services:
+  k6:
+    image: grafana/k6:latest
+    container_name: k6-benchmark
+    volumes:
+      - .:/k6
+    networks:
+      - stagepass-network
+    command: run /k6/booking_benchmark.js
+
+networks:
+  stagepass-network:
+    name: stagepass_stagepass-network
+    external: true
