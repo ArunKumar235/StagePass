@@ -18,31 +18,33 @@ import java.util.concurrent.TimeUnit;
  * Global configuration for all Feign clients in the Booking Service.
  * Applied to EventServiceClient and PaymentServiceClient.
  *
- * Applied globally via @EnableFeignClients(defaultConfiguration = FeignConfig.class)
+ * Applied globally via @EnableFeignClients(defaultConfiguration =
+ * FeignConfig.class)
  * on the main application class.
  *
  * KEY FEATURES:
  *
  * 1. Trace propagation
- *    Forwards X-Trace-Id from the incoming booking request to all outbound
- *    Feign calls. This chains the trace across all services so Zipkin can
- *    show the full journey: client → gateway → booking → event → payment.
+ * Forwards X-Trace-Id from the incoming booking request to all outbound
+ * Feign calls. This chains the trace across all services so Zipkin can
+ * show the full journey: client → gateway → booking → event → payment.
  *
  * 2. Timeouts
- *    connectTimeout: 2s — fail fast if the target service is unreachable
- *    readTimeout:    5s — Payment Service gets 5s to process the charge
- *    These are intentionally short — a hung payment call blocks a booking
- *    thread and holds the Redis seat lock open unnecessarily.
+ * connectTimeout: 2s — fail fast if the target service is unreachable
+ * readTimeout: 5s — Payment Service gets 5s to process the charge
+ * These are intentionally short — a hung payment call blocks a booking
+ * thread and holds the Redis seat lock open unnecessarily.
  *
  * 3. Retry
- *    Retries on connection failure only (not on HTTP errors like 4xx/5xx).
- *    3 attempts, 100ms initial interval, 1s max interval.
- *    DO NOT retry POST /payments/charge blindly — use PaymentService's
- *    idempotency key (bookingId) to make retries safe.
+ * Retries on connection failure only (not on HTTP errors like 4xx/5xx).
+ * 3 attempts, 100ms initial interval, 1s max interval.
+ * DO NOT retry POST /payments/charge blindly — use PaymentService's
+ * idempotency key (bookingId) to make retries safe.
  *
  * 4. Logging
- *    BASIC level: logs method, URL, status, and duration for every call.
- *    Helps debug inter-service issues without logging full request/response bodies.
+ * BASIC level: logs method, URL, status, and duration for every call.
+ * Helps debug inter-service issues without logging full request/response
+ * bodies.
  */
 @Configuration
 public class FeignConfig {
@@ -62,12 +64,12 @@ public class FeignConfig {
     public RequestInterceptor traceIdPropagationInterceptor() {
         return requestTemplate -> {
             try {
-                ServletRequestAttributes attributes =
-                        (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+                ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder
+                        .getRequestAttributes();
 
                 if (attributes != null) {
                     String traceId = attributes.getRequest().getHeader("X-Trace-Id");
-                    String userId  = attributes.getRequest().getHeader("X-User-Id");
+                    String userId = attributes.getRequest().getHeader("X-User-Id");
 
                     if (traceId != null) {
                         requestTemplate.header("X-Trace-Id", traceId);
@@ -79,8 +81,7 @@ public class FeignConfig {
                 }
             } catch (Exception e) {
                 // Never let interceptor failure block a Feign call
-                log.warn("Failed to propagate trace headers in Feign interceptor: {}",
-                        e.getMessage());
+                log.warn("Failed to propagate trace headers in Feign interceptor: {}", e.getMessage());
             }
         };
     }
@@ -88,7 +89,7 @@ public class FeignConfig {
     /**
      * Request timeouts.
      * connectTimeout: 2s — how long to wait for TCP connection
-     * readTimeout:    10s — how long to wait for the response body
+     * readTimeout: 10s — how long to wait for the response body
      *
      * Payment Service gets the full 10s because external payment gateway calls
      * can be slow. Event Service is internal — 10s is generous.
@@ -96,15 +97,15 @@ public class FeignConfig {
     @Bean
     public Request.Options feignRequestOptions() {
         return new Request.Options(
-                2, TimeUnit.SECONDS,  // connectTimeout
-                10, TimeUnit.SECONDS,  // readTimeout
-                true                  // followRedirects
+                2, TimeUnit.SECONDS, // connectTimeout
+                10, TimeUnit.SECONDS, // readTimeout
+                true // followRedirects
         );
     }
 
     /**
      * Retry on connection failure.
-     * period:    100ms initial interval between retries
+     * period: 100ms initial interval between retries
      * maxPeriod: 1000ms max interval (exponential backoff capped at 1s)
      * maxAttempts: 3
      *

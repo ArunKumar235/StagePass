@@ -87,8 +87,14 @@ public class RouteConfig {
                                                                                                 .bookingRateLimiter())
                                                                                 .setKeyResolver(rateLimiterConfig
                                                                                                 .userKeyResolver()))
-                                                                .circuitBreaker(config -> config
-                                                                                .setName("bookingServiceCB")))
+                                                                // BENCHMARKING: Circuit breaker disabled.
+                                                                // The bookingServiceCB was amplifying genuine payment
+                                                                // failures into a cascade of UUID-format 500s from
+                                                                // the gateway, making it impossible to measure the
+                                                                // real failure distribution. Re-enable for production.
+                                                                // .circuitBreaker(config -> config
+                                                                //         .setName("bookingServiceCB"))
+                                                                )
                                                 .uri("lb://booking-service"))
 
                                 // ── PAYMENT SERVICE ───────────────────────────────────────────
