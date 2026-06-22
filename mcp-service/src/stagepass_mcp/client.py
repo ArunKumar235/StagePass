@@ -141,6 +141,29 @@ async def authenticated_request(
     if response.status_code != 401:
         return response
 
+    # ── Silent Refresh Attempt ─────────────────────────────────────────────
+    # If we got a 401 but we HAVE a session, the token might just be expired.
+    # Try a silent refresh before we bother the user with a UI prompt.
+    if auth_session.token:
+        logger.info("Token expired (401). Attempting silent refresh...")
+        try:
+            await auth_session.refresh()
+            
+            # If refresh succeeds, retry the original request!
+            logger.info("Silent refresh successful. Retrying original request.")
+            headers["Authorization"] = f"Bearer {auth_session.token}"
+            response = await client.request(method, url, headers=headers, **kwargs)
+            
+            # If the retry succeeds, return it! If it's STILL 401, fall down to elicitation
+            if response.status_code != 401:
+                return response
+                
+            logger.warning("Silent refresh succeeded, but request still returned 401.")
+        except httpx.HTTPStatusError:
+            # Refresh token is invalid/expired too
+            logger.info("Silent refresh failed. Session is fully expired.")
+            auth_session.logout()
+
     # ── 401 Unauthorized — trigger MCP elicitation ─────────────────────
     logger.info("Received 401 — triggering elicitation for login credentials.")
 
