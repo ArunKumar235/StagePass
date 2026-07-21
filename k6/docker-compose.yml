@@ -6,7 +6,7 @@ services:
       - .:/k6
     networks:
       - stagepass-network
-    command: run /k6/booking_benchmark.js
+    command: run /k6/load-test.js
 
 networks:
   stagepass-network:
